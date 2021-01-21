@@ -1,59 +1,78 @@
 #!/bin/bash
-#
-# Copyright IBM Corp. All Rights Reserved.
-#
-# SPDX-License-Identifier: Apache-2.0
-#
-
-# This code is based on code written by the Hyperledger Fabric community.
-# Original code can be found here: https://github.com/hyperledger/fabric/blob/release-1.1/scripts/bootstrap.sh
-#
 
 # if version not passed in, default to latest released version
-export VERSION=${1:-1.1.0}
+VERSION=1.4.4
 # if ca version not passed in, default to latest released version
-export CA_VERSION=${2:-$VERSION}
-export ARCH=$(echo "$(uname -s|tr '[:upper:]' '[:lower:]'|sed 's/mingw64_nt.*/windows/')-$(uname -m | sed 's/x86_64/amd64/g')" | awk '{print tolower($0)}')
-#Set MARCH variable i.e ppc64le,s390x,x86_64,i386
-MARCH=`uname -m`
+CA_VERSION=1.4.4
+ARCH=$(echo "$(uname -s|tr '[:upper:]' '[:lower:]'|sed 's/mingw64_nt.*/windows/')-$(uname -m | sed 's/x86_64/amd64/g')")
+MARCH=$(uname -m)
 
-dockerFabricPull() {
-  local FABRIC_TAG=$1
-  for IMAGES in peer orderer tools; do
-      echo "==> FABRIC IMAGE: $IMAGES"
-      echo
-      docker pull hyperledger/fabric-$IMAGES:$FABRIC_TAG
-      docker tag hyperledger/fabric-$IMAGES:$FABRIC_TAG hyperledger/fabric-$IMAGES
-  done
+: "${CA_TAG:="$CA_VERSION"}"
+: "${FABRIC_TAG:="$VERSION"}"
+BINARY_FILE=hyperledger-fabric-${ARCH}-${VERSION}.tar.gz
+CA_BINARY_FILE=hyperledger-fabric-ca-${ARCH}-${CA_VERSION}.tar.gz
+
+dockerPull() {
+    #three_digit_image_tag is passed in, e.g. "1.4.7"
+    three_digit_image_tag=$1
+    shift
+    #two_digit_image_tag is derived, e.g. "1.4", especially useful as a local tag for two digit references to most recent baseos, ccenv, javaenv, nodeenv patch releases
+    two_digit_image_tag=$(echo "$three_digit_image_tag" | cut -d'.' -f1,2)
+    while [[ $# -gt 0 ]]
+    do
+        image_name="$1"
+        echo "====> hyperledger/fabric-$image_name:$three_digit_image_tag"
+        docker pull "hyperledger/fabric-$image_name:$three_digit_image_tag"
+        docker tag "hyperledger/fabric-$image_name:$three_digit_image_tag" "hyperledger/fabric-$image_name"
+        docker tag "hyperledger/fabric-$image_name:$three_digit_image_tag" "hyperledger/fabric-$image_name:$two_digit_image_tag"
+        shift
+    done
 }
 
-dockerCaPull() {
-      local CA_TAG=$1
-      echo "==> FABRIC CA IMAGE"
-      echo
-      docker pull hyperledger/fabric-ca:$CA_TAG
-      docker tag hyperledger/fabric-ca:$CA_TAG hyperledger/fabric-ca
+download() {
+    local BINARY_FILE=$1
+    local URL=$2
+    echo "===> Downloading: " "${URL}"
+    curl -L --retry 5 --retry-delay 3 "${URL}" | tar xz || rc=$?
+    if [ -n "$rc" ]; then
+        echo "==> There was an error downloading the binary file."
+        return 22
+    else
+        echo "==> Done."
+    fi
 }
 
-: ${CA_TAG:="$MARCH-$CA_VERSION"}
-: ${FABRIC_TAG:="$MARCH-$VERSION"}
+pullBinaries() {
+    echo "===> Downloading version ${FABRIC_TAG} platform specific fabric binaries"
+    download "${BINARY_FILE}" "https://github.com/hyperledger/fabric/releases/download/v${VERSION}/${BINARY_FILE}"
+    if [ $? -eq 22 ]; then
+        echo
+        echo "------> ${FABRIC_TAG} platform specific fabric binary is not available to download <----"
+        echo
+        exit
+    fi
 
-echo "===> Downloading platform specific fabric binaries"
-curl https://nexus.hyperledger.org/content/repositories/releases/org/hyperledger/fabric/hyperledger-fabric/${ARCH}-${VERSION}/hyperledger-fabric-${ARCH}-${VERSION}.tar.gz | tar xz
-
-echo "===> Downloading platform specific fabric-ca-client binary"
-curl https://nexus.hyperledger.org/content/repositories/releases/org/hyperledger/fabric-ca/hyperledger-fabric-ca/${ARCH}-${VERSION}/hyperledger-fabric-ca-${ARCH}-${VERSION}.tar.gz | tar xz
-if [ $? != 0 ]; then
-     echo
-     echo "------> $VERSION fabric-ca-client binary is not available to download  (Avaialble from 1.1.0-rc1) <----"
-     echo
-fi
-echo "===> Pulling fabric Images"
-dockerFabricPull ${FABRIC_TAG}
-
-echo "===> Pulling fabric ca Image"
-dockerCaPull ${CA_TAG}
+    echo "===> Downloading version ${CA_TAG} platform specific fabric-ca-client binary"
+    download "${CA_BINARY_FILE}" "https://github.com/hyperledger/fabric-ca/releases/download/v${CA_VERSION}/${CA_BINARY_FILE}"
+    if [ $? -eq 22 ]; then
+        echo
+        echo "------> ${CA_TAG} fabric-ca-client binary is not available to download  (Available from 1.1.0-rc1) <----"
+        echo
+        exit
+    fi
+}
 
 echo
+echo "Pull Hyperledger Fabric binaries"
+echo
+pullBinaries
+
+FABRIC_IMAGES=(peer orderer ccenv tools)
+echo "===> Pulling fabric Images"
+dockerPull "${FABRIC_TAG}" "${FABRIC_IMAGES[@]}"
+
+echo "===> Pulling fabric ca Image"
+CA_IMAGE=(ca)
+dockerPull "${CA_TAG}" "${CA_IMAGE[@]}"
 echo "===> List out hyperledger docker images"
-docker images | grep hyperledger*
+docker images | grep hyperledger
